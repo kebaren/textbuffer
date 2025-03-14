@@ -1259,12 +1259,29 @@ func (t *PieceTreeBase) InsertContentToNodeRight(value string, node *TreeNode) {
 
 // Insert 在指定偏移量处插入内容
 func (t *PieceTreeBase) Insert(offset int, value string, eolNormalized bool) {
+	// 参数检查
+	if t == nil {
+		return
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset > t.length {
+		offset = t.length
+	}
+	if value == "" {
+		return
+	}
+
 	t.EOLNormalized = t.EOLNormalized && eolNormalized
 	t.lastVisitedLine.LineNumber = 0
 	t.lastVisitedLine.Value = ""
 
 	if t.Root != SENTINEL {
 		pos := t.NodeAt(offset)
+		if pos.Node == nil {
+			return
+		}
 		node := pos.Node
 		remainder := pos.Remainder
 		nodeStartOffset := pos.NodeStartOffset
@@ -1378,15 +1395,36 @@ func (t *PieceTreeBase) Insert(offset int, value string, eolNormalized bool) {
 
 // Delete 删除指定范围的内容
 func (t *PieceTreeBase) Delete(offset, cnt int) {
+	// 参数检查
+	if t == nil {
+		return
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	if offset >= t.length {
+		return
+	}
+	if cnt <= 0 {
+		return
+	}
+	// 确保删除范围不超出文本长度
+	if offset+cnt > t.length {
+		cnt = t.length - offset
+	}
+
 	t.lastVisitedLine.LineNumber = 0
 	t.lastVisitedLine.Value = ""
 
-	if cnt <= 0 || t.Root == SENTINEL {
+	if t.Root == SENTINEL {
 		return
 	}
 
 	startPosition := t.NodeAt(offset)
 	endPosition := t.NodeAt(offset + cnt)
+	if startPosition.Node == nil || endPosition.Node == nil {
+		return
+	}
 	startNode := startPosition.Node
 	endNode := endPosition.Node
 
