@@ -2,7 +2,8 @@ package buffer
 
 import (
 	"regexp"
-	"textbuffer/buffer/common"
+
+	"github.com/kebaren/lemon/pkg/common"
 )
 
 // PieceTreeBase 片段树基础结构
