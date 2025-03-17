@@ -56,7 +56,7 @@ func (t *PieceTreeBase) Create(chunks []*StringBuffer, eol string, eolNormalized
 	var lastNode *TreeNode = nil
 	for i, length := 0, len(chunks); i < length; i++ {
 		if len(chunks[i].Buffer) > 0 {
-			if chunks[i].LineStarts == nil || len(chunks[i].LineStarts) == 0 {
+			if chunks[i].LineStarts == nil {
 				chunks[i].LineStarts = CreateLineStartsFast(chunks[i].Buffer, true)
 			}
 
@@ -251,7 +251,7 @@ func (t *PieceTreeBase) NodeAt(offset int) NodePosition {
 
 	// 如果没有找到合适的节点，返回最后一个节点
 	if t.Root != SENTINEL {
-		lastNode := Righttest(t.Root)
+		lastNode := t.FindLastNode()
 		return NodePosition{
 			Node:            lastNode,
 			Remainder:       lastNode.Piece.Length,
@@ -264,36 +264,27 @@ func (t *PieceTreeBase) NodeAt(offset int) NodePosition {
 
 // NodeAt2 根据行号和列号获取节点位置
 func (t *PieceTreeBase) NodeAt2(lineNumber, column int) NodePosition {
+	// 检查行号是否有效
+	if lineNumber <= 0 || lineNumber > t.GetLineCount() {
+		return NodePosition{}
+	}
+
+	// 检查列号是否有效
+	if column <= 0 {
+		column = 1 // 确保列号至少为1
+	}
+
+	// 从根节点开始搜索
 	x := t.Root
 	nodeStartOffset := 0
 
+	// 二分搜索，找到包含 lineNumber 的节点
 	for x != SENTINEL {
-		if x.Left != SENTINEL && x.LFLeft >= lineNumber-1 {
+		if x.LFLeft >= lineNumber-1 {
 			x = x.Left
-		} else if x.LFLeft+x.Piece.LineFeedCnt > lineNumber-1 {
-			// 在当前节点内的某一行
-			prevAccumulatedValue := t.GetAccumulatedValue(x, lineNumber-x.LFLeft-2)
-			accumulatedValue := t.GetAccumulatedValue(x, lineNumber-x.LFLeft-1)
-			nodeStartOffset += x.SizeLeft
-
-			return NodePosition{
-				Node:            x,
-				Remainder:       min(prevAccumulatedValue+column-1, accumulatedValue),
-				NodeStartOffset: nodeStartOffset,
-			}
-		} else if x.LFLeft+x.Piece.LineFeedCnt == lineNumber-1 {
-			// 在当前节点的最后一行
-			prevAccumulatedValue := t.GetAccumulatedValue(x, lineNumber-x.LFLeft-2)
-			if prevAccumulatedValue+column-1 <= x.Piece.Length {
-				return NodePosition{
-					Node:            x,
-					Remainder:       prevAccumulatedValue + column - 1,
-					NodeStartOffset: nodeStartOffset,
-				}
-			} else {
-				column -= x.Piece.Length - prevAccumulatedValue
-				break
-			}
+		} else if x.LFLeft+x.Piece.LineFeedCnt >= lineNumber-1 {
+			// 找到了包含 lineNumber 的节点
+			break
 		} else {
 			lineNumber -= x.LFLeft + x.Piece.LineFeedCnt
 			nodeStartOffset += x.SizeLeft + x.Piece.Length
@@ -301,9 +292,87 @@ func (t *PieceTreeBase) NodeAt2(lineNumber, column int) NodePosition {
 		}
 	}
 
+	// 如果没有找到节点，返回空结构
+	if x == SENTINEL {
+		return NodePosition{}
+	}
+
+	// 计算节点内的位置
+	if x.Piece.LineFeedCnt == 0 {
+		// 节点不包含换行符
+		if column <= x.Piece.Length {
+			return NodePosition{
+				Node:            x,
+				Remainder:       column - 1,
+				NodeStartOffset: nodeStartOffset,
+			}
+		} else {
+			// 列号超出了节点长度，尝试找下一个节点
+			nextNode := x.Next()
+			if nextNode != SENTINEL {
+				nextNodeOffset := t.OffsetOfNode(nextNode)
+				return NodePosition{
+					Node:            nextNode,
+					Remainder:       0,
+					NodeStartOffset: nextNodeOffset,
+				}
+			} else {
+				// 没有下一个节点，返回当前节点的末尾
+				return NodePosition{
+					Node:            x,
+					Remainder:       x.Piece.Length,
+					NodeStartOffset: nodeStartOffset,
+				}
+			}
+		}
+	}
+
+	// 节点包含换行符，需要计算行内位置
+	if x.LFLeft+x.Piece.LineFeedCnt > lineNumber-1 {
+		// 在当前节点的某一行
+		accumulatedValue := t.GetAccumulatedValue(x, lineNumber-x.LFLeft-1)
+		if column <= accumulatedValue {
+			return NodePosition{
+				Node:            x,
+				Remainder:       min(column-1, accumulatedValue),
+				NodeStartOffset: nodeStartOffset,
+			}
+		} else {
+			// 列号超出了行长度，尝试找下一行或下一个节点
+			if lineNumber-x.LFLeft < x.Piece.LineFeedCnt {
+				// 还有下一行
+				return NodePosition{
+					Node:            x,
+					Remainder:       accumulatedValue,
+					NodeStartOffset: nodeStartOffset,
+				}
+			} else {
+				// 没有下一行，尝试找下一个节点
+				nextNode := x.Next()
+				if nextNode != SENTINEL {
+					nextNodeOffset := t.OffsetOfNode(nextNode)
+					return NodePosition{
+						Node:            nextNode,
+						Remainder:       0,
+						NodeStartOffset: nextNodeOffset,
+					}
+				} else {
+					// 没有下一个节点，返回当前节点的末尾
+					return NodePosition{
+						Node:            x,
+						Remainder:       x.Piece.Length,
+						NodeStartOffset: nodeStartOffset,
+					}
+				}
+			}
+		}
+	}
+
 	// 按顺序搜索，找到包含 position.column 的节点
 	x = x.Next()
-	for x != SENTINEL {
+	while_count := 0 // 防止无限循环
+	for x != SENTINEL && while_count < 1000 {
+		while_count++
 		if x.Piece.LineFeedCnt > 0 {
 			accumulatedValue := t.GetAccumulatedValue(x, 0)
 			nodeStartOffset := t.OffsetOfNode(x)
@@ -328,11 +397,27 @@ func (t *PieceTreeBase) NodeAt2(lineNumber, column int) NodePosition {
 		x = x.Next()
 	}
 
+	// 如果没有找到合适的节点，返回最后一个节点的末尾
+	lastNode := t.FindLastNode()
+	if lastNode != SENTINEL {
+		lastNodeOffset := t.OffsetOfNode(lastNode)
+		return NodePosition{
+			Node:            lastNode,
+			Remainder:       lastNode.Piece.Length,
+			NodeStartOffset: lastNodeOffset,
+		}
+	}
+
 	return NodePosition{}
 }
 
 // GetValueInRange2 获取范围内的值
 func (t *PieceTreeBase) GetValueInRange2(startPosition, endPosition NodePosition) string {
+	// 检查节点是否为nil
+	if startPosition.Node == nil || endPosition.Node == nil {
+		return ""
+	}
+
 	if startPosition.Node == endPosition.Node {
 		node := startPosition.Node
 		buffer := t.buffers[node.Piece.BufferIndex].Buffer
@@ -798,23 +883,32 @@ func (t *PieceTreeBase) GetLinesContent() []string {
 
 // GetLineContent 获取指定行的内容
 func (t *PieceTreeBase) GetLineContent(lineNumber int) string {
-	// 检查行号是否有效（1-based索引）
-	if lineNumber < 1 || lineNumber > t.lineCnt {
+	// 检查行号是否有效
+	if lineNumber <= 0 || lineNumber > t.GetLineCount() {
 		return ""
 	}
 
-	// 转换为0-based索引用于内部处理
-	lineNumber--
-
-	// 缓存检查
+	// 检查缓存
 	if t.lastVisitedLine.LineNumber == lineNumber {
 		return t.lastVisitedLine.Value
 	}
 
-	// 如果是最后一行
-	if lineNumber == t.lineCnt-1 {
-		// 获取从行首到文档末尾的内容
-		content := t.GetValueInRange(lineNumber+1, 1, lineNumber+1, 1000000, "")
+	// 获取行内容（不包括换行符）
+	// 使用安全的方式获取行内容
+	startPosition := t.NodeAt2(lineNumber, 1)
+	if startPosition.Node == nil {
+		return "" // 如果找不到节点，返回空字符串
+	}
+
+	// 找到行尾
+	lineLength := 1000000 // 使用一个足够大的数字来表示行的最大长度
+	endPosition := t.NodeAt2(lineNumber, lineLength)
+	if endPosition.Node == nil {
+		// 如果找不到行尾节点，使用行首节点的末尾
+		buffer := t.buffers[startPosition.Node.Piece.BufferIndex].Buffer
+		startOffset := t.OffsetInBuffer(startPosition.Node.Piece.BufferIndex, startPosition.Node.Piece.Start)
+		endOffset := startOffset + startPosition.Node.Piece.Length - startPosition.Remainder
+		content := buffer[startOffset+startPosition.Remainder : endOffset]
 
 		// 更新缓存
 		t.lastVisitedLine.LineNumber = lineNumber
@@ -823,8 +917,8 @@ func (t *PieceTreeBase) GetLineContent(lineNumber int) string {
 		return content
 	}
 
-	// 获取行内容（不包括换行符）
-	content := t.GetValueInRange(lineNumber+1, 1, lineNumber+1, 1000000, "")
+	// 正常获取行内容
+	content := t.GetValueInRange(lineNumber, 1, lineNumber, lineLength, "")
 
 	// 更新缓存
 	t.lastVisitedLine.LineNumber = lineNumber
@@ -1384,29 +1478,68 @@ func (t *PieceTreeBase) Delete(offset, cnt int) {
 	// 记录原始长度用于调试
 	originalLength := t.length
 
-	startPosition := t.NodeAt(offset)
-	endPosition := t.NodeAt(offset + cnt)
-	if startPosition.Node == nil || endPosition.Node == nil {
+	// 特殊处理：如果我们在删除节点边界上的内容，需要找到确切的节点
+	// 首先，获取删除范围内的所有节点
+	nodesToDelete := make([]*TreeNode, 0)
+	var startNode, endNode *TreeNode
+	var startRemainder, endRemainder int
+
+	// 找到删除范围内的所有节点
+	currentOffset := 0
+	t.Iterate(t.Root, func(node *TreeNode) bool {
+		if node == SENTINEL {
+			return true
+		}
+
+		nodeLength := node.Piece.Length
+		nodeEndOffset := currentOffset + nodeLength
+
+		// 检查节点是否与删除范围重叠
+		if nodeEndOffset > offset && currentOffset < offset+cnt {
+			// 节点与删除范围重叠
+			if startNode == nil {
+				startNode = node
+				startRemainder = offset - currentOffset
+				if startRemainder < 0 {
+					startRemainder = 0
+				}
+			}
+
+			// 检查是否需要完全删除节点
+			if currentOffset >= offset && nodeEndOffset <= offset+cnt {
+				// 节点完全在删除范围内
+				nodesToDelete = append(nodesToDelete, node)
+			} else if currentOffset < offset && nodeEndOffset > offset+cnt {
+				// 删除范围在节点内部
+				endNode = node
+				endRemainder = offset + cnt - currentOffset
+			} else if nodeEndOffset > offset+cnt {
+				// 节点部分在删除范围内，部分在删除范围外
+				endNode = node
+				endRemainder = offset + cnt - currentOffset
+			}
+		}
+
+		currentOffset += nodeLength
+		return true
+	})
+
+	// 如果没有找到节点，直接返回
+	if startNode == nil {
 		return
 	}
-	startNode := startPosition.Node
-	endNode := endPosition.Node
 
-	// 收集要删除的节点
-	nodesToDel := make([]*TreeNode, 0)
-
-	if startNode == endNode {
-		// 删除范围在同一个节点内
+	// 处理起始节点
+	if startNode != nil && !contains(nodesToDelete, startNode) {
+		// 起始节点需要部分删除
 		piece := startNode.Piece
 		bufferIndex := piece.BufferIndex
 
-		if startPosition.Remainder == 0 && endPosition.Remainder == startNode.Piece.Length {
-			// 删除整个节点
-			nodesToDel = append(nodesToDel, startNode)
-		} else if startPosition.Remainder == 0 {
-			// 删除节点开头部分
-			newStart := t.PositionInBuffer(startNode, endPosition.Remainder)
-			newLength := piece.Length - endPosition.Remainder
+		if startRemainder == 0 {
+			// 从节点开头开始删除
+			deleteLength := min(cnt, piece.Length)
+			newStart := t.PositionInBuffer(startNode, deleteLength)
+			newLength := piece.Length - deleteLength
 			newLineFeedCnt := t.GetLineFeedCnt(bufferIndex, newStart, piece.End)
 
 			startNode.Piece = NewPiece(
@@ -1420,121 +1553,88 @@ func (t *PieceTreeBase) Delete(offset, cnt int) {
 			// 更新树元数据
 			UpdateTreeMetadata(t, startNode, newLength-piece.Length, newLineFeedCnt-piece.LineFeedCnt)
 
-			// 如果节点变为空，标记为删除
+			// 如果节点变为空，删除它
 			if newLength == 0 {
-				nodesToDel = append(nodesToDel, startNode)
+				nodesToDelete = append(nodesToDelete, startNode)
 			}
-		} else if endPosition.Remainder == piece.Length {
-			// 删除节点结尾部分
-			newEnd := t.PositionInBuffer(startNode, startPosition.Remainder)
-			newLength := startPosition.Remainder
-			newLineFeedCnt := t.GetLineFeedCnt(bufferIndex, piece.Start, newEnd)
+		} else if startRemainder > 0 && startRemainder < piece.Length {
+			// 删除节点中间部分
+			if endNode == startNode {
+				// 删除范围在同一个节点内
+				leftEnd := t.PositionInBuffer(startNode, startRemainder)
+				rightStart := t.PositionInBuffer(startNode, endRemainder)
 
-			startNode.Piece = NewPiece(
-				bufferIndex,
-				piece.Start,
-				newEnd,
-				newLineFeedCnt,
-				newLength,
-			)
+				// 计算左侧部分
+				leftLength := t.OffsetInBuffer(bufferIndex, leftEnd) - t.OffsetInBuffer(bufferIndex, piece.Start)
+				leftLineFeedCnt := t.GetLineFeedCnt(bufferIndex, piece.Start, leftEnd)
 
-			// 更新树元数据
-			UpdateTreeMetadata(t, startNode, newLength-piece.Length, newLineFeedCnt-piece.LineFeedCnt)
+				// 计算右侧部分
+				rightLength := t.OffsetInBuffer(bufferIndex, piece.End) - t.OffsetInBuffer(bufferIndex, rightStart)
+				rightLineFeedCnt := t.GetLineFeedCnt(bufferIndex, rightStart, piece.End)
 
-			// 如果节点变为空，标记为删除
-			if newLength == 0 {
-				nodesToDel = append(nodesToDel, startNode)
-			}
-		} else {
-			// 删除节点中间部分，需要分割成两个节点
-			leftEnd := t.PositionInBuffer(startNode, startPosition.Remainder)
-			rightStart := t.PositionInBuffer(startNode, endPosition.Remainder)
-
-			// 计算左侧部分
-			leftLength := t.OffsetInBuffer(bufferIndex, leftEnd) - t.OffsetInBuffer(bufferIndex, piece.Start)
-			leftLineFeedCnt := t.GetLineFeedCnt(bufferIndex, piece.Start, leftEnd)
-
-			// 计算右侧部分
-			rightLength := t.OffsetInBuffer(bufferIndex, piece.End) - t.OffsetInBuffer(bufferIndex, rightStart)
-			rightLineFeedCnt := t.GetLineFeedCnt(bufferIndex, rightStart, piece.End)
-
-			// 更新当前节点为左侧部分
-			startNode.Piece = NewPiece(
-				bufferIndex,
-				piece.Start,
-				leftEnd,
-				leftLineFeedCnt,
-				leftLength,
-			)
-
-			// 更新树元数据
-			UpdateTreeMetadata(t, startNode, leftLength-piece.Length, leftLineFeedCnt-piece.LineFeedCnt)
-
-			// 如果左侧部分为空，标记为删除
-			if leftLength == 0 {
-				nodesToDel = append(nodesToDel, startNode)
-			}
-
-			// 如果右侧部分有内容，创建新节点
-			if rightLength > 0 {
-				rightPiece := NewPiece(
+				// 更新当前节点为左侧部分
+				startNode.Piece = NewPiece(
 					bufferIndex,
-					rightStart,
-					piece.End,
-					rightLineFeedCnt,
-					rightLength,
+					piece.Start,
+					leftEnd,
+					leftLineFeedCnt,
+					leftLength,
 				)
-				t.RbInsertRight(startNode, rightPiece)
+
+				// 更新树元数据
+				UpdateTreeMetadata(t, startNode, leftLength-piece.Length, leftLineFeedCnt-piece.LineFeedCnt)
+
+				// 如果左侧部分为空，删除它
+				if leftLength == 0 {
+					nodesToDelete = append(nodesToDelete, startNode)
+				}
+
+				// 如果右侧部分有内容，创建新节点
+				if rightLength > 0 {
+					rightPiece := NewPiece(
+						bufferIndex,
+						rightStart,
+						piece.End,
+						rightLineFeedCnt,
+						rightLength,
+					)
+					t.RbInsertRight(startNode, rightPiece)
+				}
+			} else {
+				// 删除节点结尾部分
+				newEnd := t.PositionInBuffer(startNode, startRemainder)
+				newLength := startRemainder
+				newLineFeedCnt := t.GetLineFeedCnt(bufferIndex, piece.Start, newEnd)
+
+				startNode.Piece = NewPiece(
+					bufferIndex,
+					piece.Start,
+					newEnd,
+					newLineFeedCnt,
+					newLength,
+				)
+
+				// 更新树元数据
+				UpdateTreeMetadata(t, startNode, newLength-piece.Length, newLineFeedCnt-piece.LineFeedCnt)
+
+				// 如果节点变为空，删除它
+				if newLength == 0 {
+					nodesToDelete = append(nodesToDelete, startNode)
+				}
 			}
 		}
-	} else {
-		// 删除范围跨越多个节点
+	}
 
-		// 处理开始节点
-		if startPosition.Remainder > 0 {
-			// 保留开始节点的一部分
-			piece := startNode.Piece
-			bufferIndex := piece.BufferIndex
-			newEnd := t.PositionInBuffer(startNode, startPosition.Remainder)
-			newLength := startPosition.Remainder
-			newLineFeedCnt := t.GetLineFeedCnt(bufferIndex, piece.Start, newEnd)
+	// 处理结束节点
+	if endNode != nil && endNode != startNode && !contains(nodesToDelete, endNode) {
+		// 结束节点需要部分删除
+		piece := endNode.Piece
+		bufferIndex := piece.BufferIndex
 
-			startNode.Piece = NewPiece(
-				bufferIndex,
-				piece.Start,
-				newEnd,
-				newLineFeedCnt,
-				newLength,
-			)
-
-			// 更新树元数据
-			UpdateTreeMetadata(t, startNode, newLength-piece.Length, newLineFeedCnt-piece.LineFeedCnt)
-
-			// 如果节点变为空，标记为删除
-			if newLength == 0 {
-				nodesToDel = append(nodesToDel, startNode)
-			}
-		} else {
-			// 删除整个开始节点
-			nodesToDel = append(nodesToDel, startNode)
-		}
-
-		// 处理中间节点
-		if startNode != nil && startNode != SENTINEL {
-			node := startNode.Next()
-			for node != SENTINEL && node != endNode && node != nil {
-				nodesToDel = append(nodesToDel, node)
-				node = node.Next()
-			}
-		}
-
-		// 处理结束节点
-		if endNode != SENTINEL && endNode != nil && endPosition.Remainder > 0 {
-			// 保留结束节点的一部分
-			piece := endNode.Piece
-			bufferIndex := piece.BufferIndex
-			newStart := t.PositionInBuffer(endNode, endPosition.Remainder)
-			newLength := piece.Length - endPosition.Remainder
+		if endRemainder > 0 && endRemainder < piece.Length {
+			// 删除节点开头部分
+			newStart := t.PositionInBuffer(endNode, endRemainder)
+			newLength := piece.Length - endRemainder
 			newLineFeedCnt := t.GetLineFeedCnt(bufferIndex, newStart, piece.End)
 
 			endNode.Piece = NewPiece(
@@ -1548,21 +1648,23 @@ func (t *PieceTreeBase) Delete(offset, cnt int) {
 			// 更新树元数据
 			UpdateTreeMetadata(t, endNode, newLength-piece.Length, newLineFeedCnt-piece.LineFeedCnt)
 
-			// 如果节点变为空，标记为删除
+			// 如果节点变为空，删除它
 			if newLength == 0 {
-				nodesToDel = append(nodesToDel, endNode)
+				nodesToDelete = append(nodesToDelete, endNode)
 			}
-		} else if endNode != SENTINEL && endNode != nil {
-			// 删除整个结束节点
-			nodesToDel = append(nodesToDel, endNode)
 		}
 	}
 
 	// 删除标记的节点
-	for i := 0; i < len(nodesToDel); i++ {
-		if nodesToDel[i] != nil && nodesToDel[i] != SENTINEL {
-			RbDelete(t, nodesToDel[i])
+	for _, node := range nodesToDelete {
+		if node != nil && node != SENTINEL {
+			RbDelete(t, node)
 		}
+	}
+
+	// 验证CRLF连接处
+	if startNode != nil && startNode != SENTINEL && startNode.Piece.Length > 0 {
+		t.ValidateCRLFWithNextNode(startNode)
 	}
 
 	// 更新元数据
@@ -1573,6 +1675,16 @@ func (t *PieceTreeBase) Delete(offset, cnt int) {
 		// 如果长度不正确，强制更新长度
 		t.length = originalLength - cnt
 	}
+}
+
+// contains 检查切片中是否包含指定元素
+func contains(slice []*TreeNode, item *TreeNode) bool {
+	for _, v := range slice {
+		if v == item {
+			return true
+		}
+	}
+	return false
 }
 
 // ShrinkNode 缩小节点
@@ -1709,4 +1821,32 @@ func (t *PieceTreeBase) AppendToNode(node *TreeNode, value string) {
 
 	t.lastChangeBufferPos = newEnd
 	UpdateTreeMetadata(t, node, len(value), lfDelta)
+}
+
+// FindLastNode 查找树中的最后一个节点
+func (t *PieceTreeBase) FindLastNode() *TreeNode {
+	if t.Root == SENTINEL {
+		return SENTINEL
+	}
+
+	// 从根节点开始，一直向右查找到最右边的节点
+	current := t.Root
+	for current.Right != SENTINEL {
+		current = current.Right
+	}
+
+	// 如果最右节点有子节点，找到其最右子节点
+	if current.Piece.LineFeedCnt > 0 {
+		// 找到最后一行的最后一个节点
+		return current
+	}
+
+	// 查找下一个节点，直到找到最后一个
+	next := current.Next()
+	for next != SENTINEL {
+		current = next
+		next = next.Next()
+	}
+
+	return current
 }
