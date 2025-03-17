@@ -28,9 +28,6 @@ func NewPieceTreeSearchCache(limit int) *PieceTreeSearchCache {
 
 // Get 根据偏移量获取缓存条目
 func (c *PieceTreeSearchCache) Get(offset int) *CacheEntry {
-	if len(c.cache) == 0 {
-		return nil
-	}
 
 	for i := len(c.cache) - 1; i >= 0; i-- {
 		if c.cache[i].NodeStartOffset <= offset && c.cache[i].NodeStartOffset+c.cache[i].Node.Piece.Length >= offset {

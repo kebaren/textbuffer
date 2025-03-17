@@ -91,6 +91,12 @@ var SENTINEL = &TreeNode{
 	},
 }
 
+func init() {
+	SENTINEL.Left = SENTINEL
+	SENTINEL.Right = SENTINEL
+	SENTINEL.Parent = SENTINEL
+}
+
 // NodePosition 节点位置
 type NodePosition struct {
 	// Node 节点
