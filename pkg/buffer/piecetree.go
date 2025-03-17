@@ -881,6 +881,89 @@ func (t *PieceTreeBase) GetLinesContent() []string {
 	return result
 }
 
+// GetLineRawContent 获取指定行的原始内容，包括行尾字符
+func (t *PieceTreeBase) GetLineRawContent(lineNumber int, endOffset int) string {
+	if lineNumber <= 0 || lineNumber > t.GetLineCount() {
+		return ""
+	}
+
+	x := t.Root
+	ret := ""
+
+	// 尝试使用缓存
+	cache := t.searchCache.Get2(lineNumber)
+	if cache != nil {
+		x = cache.Node
+		prevAccumulatedValue := t.GetAccumulatedValue(x, lineNumber-cache.NodeStartLineNumber-1)
+		buffer := t.buffers[x.Piece.BufferIndex].Buffer
+		startOffset := t.OffsetInBuffer(x.Piece.BufferIndex, x.Piece.Start)
+
+		if cache.NodeStartLineNumber+x.Piece.LineFeedCnt == lineNumber {
+			ret = buffer[startOffset+prevAccumulatedValue : startOffset+x.Piece.Length]
+		} else {
+			accumulatedValue := t.GetAccumulatedValue(x, lineNumber-cache.NodeStartLineNumber)
+			return buffer[startOffset+prevAccumulatedValue : startOffset+accumulatedValue-endOffset]
+		}
+	}
+
+	// 如果缓存未命中，从根节点开始搜索
+	nodeStartOffset := 0
+	originalLineNumber := lineNumber
+
+	for x != SENTINEL {
+		if x.Left != SENTINEL && x.LFLeft >= lineNumber-1 {
+			x = x.Left
+		} else if x.LFLeft+x.Piece.LineFeedCnt > lineNumber-1 {
+			prevAccumulatedValue := t.GetAccumulatedValue(x, lineNumber-x.LFLeft-2)
+			accumulatedValue := t.GetAccumulatedValue(x, lineNumber-x.LFLeft-1)
+			buffer := t.buffers[x.Piece.BufferIndex].Buffer
+			startOffset := t.OffsetInBuffer(x.Piece.BufferIndex, x.Piece.Start)
+			nodeStartOffset += x.SizeLeft
+
+			// 更新缓存
+			t.searchCache.Set(CacheEntry{
+				Node:                x,
+				NodeStartOffset:     nodeStartOffset,
+				NodeStartLineNumber: originalLineNumber - (lineNumber - 1 - x.LFLeft),
+			})
+
+			return buffer[startOffset+prevAccumulatedValue : startOffset+accumulatedValue-endOffset]
+		} else if x.LFLeft+x.Piece.LineFeedCnt == lineNumber-1 {
+			prevAccumulatedValue := t.GetAccumulatedValue(x, lineNumber-x.LFLeft-2)
+			buffer := t.buffers[x.Piece.BufferIndex].Buffer
+			startOffset := t.OffsetInBuffer(x.Piece.BufferIndex, x.Piece.Start)
+
+			ret = buffer[startOffset+prevAccumulatedValue : startOffset+x.Piece.Length]
+			break
+		} else {
+			lineNumber -= x.LFLeft + x.Piece.LineFeedCnt
+			nodeStartOffset += x.SizeLeft + x.Piece.Length
+			x = x.Right
+		}
+	}
+
+	// 按顺序搜索，找到包含结束列的节点
+	x = x.Next()
+	for x != SENTINEL {
+		buffer := t.buffers[x.Piece.BufferIndex].Buffer
+
+		if x.Piece.LineFeedCnt > 0 {
+			accumulatedValue := t.GetAccumulatedValue(x, 0)
+			startOffset := t.OffsetInBuffer(x.Piece.BufferIndex, x.Piece.Start)
+
+			ret += buffer[startOffset : startOffset+accumulatedValue-endOffset]
+			return ret
+		} else {
+			startOffset := t.OffsetInBuffer(x.Piece.BufferIndex, x.Piece.Start)
+			ret += buffer[startOffset : startOffset+x.Piece.Length]
+		}
+
+		x = x.Next()
+	}
+
+	return ret
+}
+
 // GetLineContent 获取指定行的内容
 func (t *PieceTreeBase) GetLineContent(lineNumber int) string {
 	// 检查行号是否有效
@@ -893,38 +976,22 @@ func (t *PieceTreeBase) GetLineContent(lineNumber int) string {
 		return t.lastVisitedLine.Value
 	}
 
-	// 获取行内容（不包括换行符）
-	// 使用安全的方式获取行内容
-	startPosition := t.NodeAt2(lineNumber, 1)
-	if startPosition.Node == nil {
-		return "" // 如果找不到节点，返回空字符串
-	}
-
-	// 找到行尾
-	lineLength := 1000000 // 使用一个足够大的数字来表示行的最大长度
-	endPosition := t.NodeAt2(lineNumber, lineLength)
-	if endPosition.Node == nil {
-		// 如果找不到行尾节点，使用行首节点的末尾
-		buffer := t.buffers[startPosition.Node.Piece.BufferIndex].Buffer
-		startOffset := t.OffsetInBuffer(startPosition.Node.Piece.BufferIndex, startPosition.Node.Piece.Start)
-		endOffset := startOffset + startPosition.Node.Piece.Length - startPosition.Remainder
-		content := buffer[startOffset+startPosition.Remainder : endOffset]
-
-		// 更新缓存
-		t.lastVisitedLine.LineNumber = lineNumber
-		t.lastVisitedLine.Value = content
-
-		return content
-	}
-
-	// 正常获取行内容
-	content := t.GetValueInRange(lineNumber, 1, lineNumber, lineLength, "")
-
-	// 更新缓存
 	t.lastVisitedLine.LineNumber = lineNumber
-	t.lastVisitedLine.Value = content
 
-	return content
+	// 根据不同情况处理行内容
+	if lineNumber == t.lineCnt {
+		// 最后一行
+		t.lastVisitedLine.Value = t.GetLineRawContent(lineNumber, 0)
+	} else if t.EOLNormalized {
+		// EOL已规范化，使用EOL长度
+		t.lastVisitedLine.Value = t.GetLineRawContent(lineNumber, t.EOLLength)
+	} else {
+		// EOL未规范化，需要移除行尾的换行符
+		rawContent := t.GetLineRawContent(lineNumber, 0)
+		t.lastVisitedLine.Value = regexp.MustCompile(`\r\n|\r|\n$`).ReplaceAllString(rawContent, "")
+	}
+
+	return t.lastVisitedLine.Value
 }
 
 // GetLineLength 获取指定行的长度
