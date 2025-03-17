@@ -1,0 +1,3 @@
+[submodule "tools/textbuffer"]
+	path = tools/textbuffer
+	url = https://github.com/microsoft/vscode-textbuffer.git
