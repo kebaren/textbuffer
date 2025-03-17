@@ -2,6 +2,7 @@ package buffer
 
 import (
 	"regexp"
+	"strings"
 
 	"github.com/kebaren/lemon/pkg/common"
 )
@@ -54,7 +55,7 @@ func (t *PieceTreeBase) Create(chunks []*StringBuffer, eol string, eolNormalized
 	t.EOLNormalized = eolNormalized
 
 	var lastNode *TreeNode = nil
-	for i, length := 0, len(chunks); i < length; i++ {
+	for i := 0; i < len(chunks); i++ {
 		if len(chunks[i].Buffer) > 0 {
 			if chunks[i].LineStarts == nil {
 				chunks[i].LineStarts = CreateLineStartsFast(chunks[i].Buffer, true)
@@ -264,27 +265,39 @@ func (t *PieceTreeBase) NodeAt(offset int) NodePosition {
 
 // NodeAt2 根据行号和列号获取节点位置
 func (t *PieceTreeBase) NodeAt2(lineNumber, column int) NodePosition {
-	// 检查行号是否有效
-	if lineNumber <= 0 || lineNumber > t.GetLineCount() {
+	if lineNumber < 1 || lineNumber > t.GetLineCount() {
 		return NodePosition{}
 	}
 
-	// 检查列号是否有效
-	if column <= 0 {
-		column = 1 // 确保列号至少为1
-	}
-
-	// 从根节点开始搜索
 	x := t.Root
 	nodeStartOffset := 0
 
-	// 二分搜索，找到包含 lineNumber 的节点
+	// Search in tree
 	for x != SENTINEL {
-		if x.LFLeft >= lineNumber-1 {
+		if x.Left != SENTINEL && x.LFLeft >= lineNumber-1 {
 			x = x.Left
-		} else if x.LFLeft+x.Piece.LineFeedCnt >= lineNumber-1 {
-			// 找到了包含 lineNumber 的节点
-			break
+		} else if x.LFLeft+x.Piece.LineFeedCnt > lineNumber-1 {
+			prevAccumulatedValue := t.GetAccumulatedValue(x, lineNumber-x.LFLeft-2)
+			accumulatedValue := t.GetAccumulatedValue(x, lineNumber-x.LFLeft-1)
+			nodeStartOffset += x.SizeLeft
+
+			return NodePosition{
+				Node:            x,
+				Remainder:       min(prevAccumulatedValue+column-1, accumulatedValue),
+				NodeStartOffset: nodeStartOffset,
+			}
+		} else if x.LFLeft+x.Piece.LineFeedCnt == lineNumber-1 {
+			prevAccumulatedValue := t.GetAccumulatedValue(x, lineNumber-x.LFLeft-2)
+			if prevAccumulatedValue+column-1 <= x.Piece.Length {
+				return NodePosition{
+					Node:            x,
+					Remainder:       prevAccumulatedValue + column - 1,
+					NodeStartOffset: nodeStartOffset,
+				}
+			} else {
+				column -= x.Piece.Length - prevAccumulatedValue
+				break
+			}
 		} else {
 			lineNumber -= x.LFLeft + x.Piece.LineFeedCnt
 			nodeStartOffset += x.SizeLeft + x.Piece.Length
@@ -292,87 +305,9 @@ func (t *PieceTreeBase) NodeAt2(lineNumber, column int) NodePosition {
 		}
 	}
 
-	// 如果没有找到节点，返回空结构
-	if x == SENTINEL {
-		return NodePosition{}
-	}
-
-	// 计算节点内的位置
-	if x.Piece.LineFeedCnt == 0 {
-		// 节点不包含换行符
-		if column <= x.Piece.Length {
-			return NodePosition{
-				Node:            x,
-				Remainder:       column - 1,
-				NodeStartOffset: nodeStartOffset,
-			}
-		} else {
-			// 列号超出了节点长度，尝试找下一个节点
-			nextNode := x.Next()
-			if nextNode != SENTINEL {
-				nextNodeOffset := t.OffsetOfNode(nextNode)
-				return NodePosition{
-					Node:            nextNode,
-					Remainder:       0,
-					NodeStartOffset: nextNodeOffset,
-				}
-			} else {
-				// 没有下一个节点，返回当前节点的末尾
-				return NodePosition{
-					Node:            x,
-					Remainder:       x.Piece.Length,
-					NodeStartOffset: nodeStartOffset,
-				}
-			}
-		}
-	}
-
-	// 节点包含换行符，需要计算行内位置
-	if x.LFLeft+x.Piece.LineFeedCnt > lineNumber-1 {
-		// 在当前节点的某一行
-		accumulatedValue := t.GetAccumulatedValue(x, lineNumber-x.LFLeft-1)
-		if column <= accumulatedValue {
-			return NodePosition{
-				Node:            x,
-				Remainder:       min(column-1, accumulatedValue),
-				NodeStartOffset: nodeStartOffset,
-			}
-		} else {
-			// 列号超出了行长度，尝试找下一行或下一个节点
-			if lineNumber-x.LFLeft < x.Piece.LineFeedCnt {
-				// 还有下一行
-				return NodePosition{
-					Node:            x,
-					Remainder:       accumulatedValue,
-					NodeStartOffset: nodeStartOffset,
-				}
-			} else {
-				// 没有下一行，尝试找下一个节点
-				nextNode := x.Next()
-				if nextNode != SENTINEL {
-					nextNodeOffset := t.OffsetOfNode(nextNode)
-					return NodePosition{
-						Node:            nextNode,
-						Remainder:       0,
-						NodeStartOffset: nextNodeOffset,
-					}
-				} else {
-					// 没有下一个节点，返回当前节点的末尾
-					return NodePosition{
-						Node:            x,
-						Remainder:       x.Piece.Length,
-						NodeStartOffset: nodeStartOffset,
-					}
-				}
-			}
-		}
-	}
-
-	// 按顺序搜索，找到包含 position.column 的节点
+	// Search in order to find the node containing position.column
 	x = x.Next()
-	while_count := 0 // 防止无限循环
-	for x != SENTINEL && while_count < 1000 {
-		while_count++
+	for x != SENTINEL {
 		if x.Piece.LineFeedCnt > 0 {
 			accumulatedValue := t.GetAccumulatedValue(x, 0)
 			nodeStartOffset := t.OffsetOfNode(x)
@@ -395,17 +330,6 @@ func (t *PieceTreeBase) NodeAt2(lineNumber, column int) NodePosition {
 		}
 
 		x = x.Next()
-	}
-
-	// 如果没有找到合适的节点，返回最后一个节点的末尾
-	lastNode := t.FindLastNode()
-	if lastNode != SENTINEL {
-		lastNodeOffset := t.OffsetOfNode(lastNode)
-		return NodePosition{
-			Node:            lastNode,
-			Remainder:       lastNode.Piece.Length,
-			NodeStartOffset: lastNodeOffset,
-		}
 	}
 
 	return NodePosition{}
@@ -591,45 +515,34 @@ func (t *PieceTreeBase) GetLineFeedCnt(bufferIndex int, start, end BufferCursor)
 		return 0
 	}
 
-	// 如果end.column为0，说明end正好在行首，不需要特殊处理CRLF
+	// 如果end.column为0，说明end正好在行首
 	if end.Column == 0 {
 		return end.Line - start.Line
 	}
 
-	startOffset := t.OffsetInBuffer(bufferIndex, start)
-	endOffset := t.OffsetInBuffer(bufferIndex, end)
-
-	// 确保偏移量有效
-	if startOffset >= endOffset {
-		return 0
+	lineStarts := t.buffers[bufferIndex].LineStarts
+	if end.Line == len(lineStarts)-1 {
+		// 说明end后面没有\n，否则会有更多的lineStart
+		return end.Line - start.Line
 	}
 
+	nextLineStartOffset := lineStarts[end.Line+1]
+	endOffset := lineStarts[end.Line] + end.Column
+	if nextLineStartOffset > endOffset+1 {
+		// end后面有超过1个字符，说明不可能是\n
+		return end.Line - start.Line
+	}
+
+	// endOffset + 1 == nextLineStartOffset
+	// endOffset处的字符是\n，所以我们先检查前一个字符
+	// 如果endOffset处的字符是\r，end.Column应该是0，不会走到这里
+	previousCharOffset := endOffset - 1 // end.Column > 0 所以这里是安全的
 	buffer := t.buffers[bufferIndex].Buffer
 
-	// 确保不越界
-	if endOffset > len(buffer) {
-		endOffset = len(buffer)
+	if buffer[previousCharOffset] == '\r' {
+		return end.Line - start.Line + 1
 	}
-
-	text := buffer[startOffset:endOffset]
-
-	count := 0
-	for i := 0; i < len(text); i++ {
-		if text[i] == '\n' {
-			count++
-		} else if text[i] == '\r' {
-			// 处理CRLF序列
-			if i+1 < len(text) && text[i+1] == '\n' {
-				count++
-				i++ // 跳过下一个字符，因为已经计算了CRLF
-			} else {
-				// 单独的\r也算一个换行
-				count++
-			}
-		}
-	}
-
-	return count
+	return end.Line - start.Line
 }
 
 // PositionInBuffer 根据节点和偏移量计算缓冲区中的位置
@@ -684,9 +597,8 @@ func (t *PieceTreeBase) GetAccumulatedValue(node *TreeNode, index int) int {
 	expectedLineStartIndex := piece.Start.Line + index + 1
 	if expectedLineStartIndex > piece.End.Line {
 		return lineStarts[piece.End.Line] + piece.End.Column - lineStarts[piece.Start.Line] - piece.Start.Column
-	} else {
-		return lineStarts[expectedLineStartIndex] - lineStarts[piece.Start.Line] - piece.Start.Column
 	}
+	return lineStarts[expectedLineStartIndex] - lineStarts[piece.Start.Line] - piece.Start.Column
 }
 
 // OffsetOfNode 获取节点的偏移量
@@ -724,7 +636,7 @@ func (t *PieceTreeBase) GetIndexOf(node *TreeNode, accumulatedValue int) struct 
 	lineCnt := pos.Line - piece.Start.Line
 
 	if t.OffsetInBuffer(piece.BufferIndex, piece.End)-t.OffsetInBuffer(piece.BufferIndex, piece.Start) == accumulatedValue {
-		// 我们正在检查此节点的末尾，因此需要进行 CRLF 检查
+		// 我们正在检查此节点的末尾，所以需要进行 CRLF 检查
 		realLineCnt := t.GetLineFeedCnt(node.Piece.BufferIndex, piece.Start, pos)
 		if realLineCnt != lineCnt {
 			// 是的，CRLF
@@ -796,120 +708,37 @@ func (t *PieceTreeBase) GetContentOfSubTree(node *TreeNode) string {
 	return str
 }
 
-// GetLinesRawContent 获取所有行的原始内容
-func (t *PieceTreeBase) GetLinesRawContent() string {
-	if t.Root == SENTINEL {
-		return ""
-	}
-
-	var result string
-	t.Iterate(t.Root, func(node *TreeNode) bool {
-		if node == SENTINEL {
-			return true
-		}
-
-		piece := node.Piece
-		buffer := t.buffers[piece.BufferIndex].Buffer
-		startOffset := t.OffsetInBuffer(piece.BufferIndex, piece.Start)
-		endOffset := t.OffsetInBuffer(piece.BufferIndex, piece.End)
-
-		result += buffer[startOffset:endOffset]
-		return true
-	})
-
-	return result
-}
-
-// GetLinesContent 获取所有行的内容
-func (t *PieceTreeBase) GetLinesContent() []string {
-	result := make([]string, 0, t.lineCnt)
-	if t.Root == SENTINEL {
-		// 空文档也应该有一行
-		return []string{""}
-	}
-
-	// 添加第一行
-	result = append(result, "")
-	currentLine := 0
-
-	t.Iterate(t.Root, func(node *TreeNode) bool {
-		if node == SENTINEL {
-			return true
-		}
-
-		piece := node.Piece
-		buffer := t.buffers[piece.BufferIndex].Buffer
-		startOffset := t.OffsetInBuffer(piece.BufferIndex, piece.Start)
-		endOffset := t.OffsetInBuffer(piece.BufferIndex, piece.End)
-
-		// 处理此片段中的每个字符
-		for i := startOffset; i < endOffset; i++ {
-			ch := buffer[i]
-			if ch == '\r' {
-				if i+1 < endOffset && buffer[i+1] == '\n' {
-					// 跳过 \r，\n 将在下一次迭代中处理
-					continue
-				}
-				// 单独的 \r 作为换行符
-				currentLine++
-				if currentLine >= len(result) {
-					result = append(result, "")
-				}
-			} else if ch == '\n' {
-				// \n 作为换行符
-				currentLine++
-				if currentLine >= len(result) {
-					result = append(result, "")
-				}
-			} else {
-				// 普通字符，添加到当前行
-				if currentLine >= len(result) {
-					result = append(result, "")
-				}
-				result[currentLine] += string(ch)
-			}
-		}
-
-		return true
-	})
-
-	// 确保返回的行数与lineCnt一致
-	for len(result) < t.lineCnt {
-		result = append(result, "")
-	}
-
-	return result
-}
-
-// GetLineRawContent 获取指定行的原始内容，包括行尾字符
+// GetLinesRawContent 获取指定行的原始内容，包括行尾字符
 func (t *PieceTreeBase) GetLineRawContent(lineNumber int, endOffset int) string {
-	if lineNumber <= 0 || lineNumber > t.GetLineCount() {
+	if lineNumber < 1 || lineNumber > t.GetLineCount() {
 		return ""
 	}
 
 	x := t.Root
-	ret := ""
+	var ret string
 
-	// 尝试使用缓存
-	cache := t.searchCache.Get2(lineNumber)
-	if cache != nil {
-		x = cache.Node
-		prevAccumulatedValue := t.GetAccumulatedValue(x, lineNumber-cache.NodeStartLineNumber-1)
-		buffer := t.buffers[x.Piece.BufferIndex].Buffer
-		startOffset := t.OffsetInBuffer(x.Piece.BufferIndex, x.Piece.Start)
+	// Try to use search cache
+	if t.searchCache != nil {
+		cache := t.searchCache.Get2(lineNumber)
+		if cache != nil {
+			x = cache.Node
+			prevAccumulatedValue := t.GetAccumulatedValue(x, lineNumber-cache.NodeStartLineNumber-2)
+			buffer := t.buffers[x.Piece.BufferIndex].Buffer
+			startOffset := t.OffsetInBuffer(x.Piece.BufferIndex, x.Piece.Start)
 
-		if cache.NodeStartLineNumber+x.Piece.LineFeedCnt == lineNumber {
-			ret = buffer[startOffset+prevAccumulatedValue : startOffset+x.Piece.Length]
-		} else {
-			accumulatedValue := t.GetAccumulatedValue(x, lineNumber-cache.NodeStartLineNumber)
-			return buffer[startOffset+prevAccumulatedValue : startOffset+accumulatedValue-endOffset]
+			if cache.NodeStartLineNumber+x.Piece.LineFeedCnt == lineNumber {
+				ret = buffer[startOffset+prevAccumulatedValue : startOffset+x.Piece.Length]
+			} else {
+				accumulatedValue := t.GetAccumulatedValue(x, lineNumber-cache.NodeStartLineNumber-1)
+				return buffer[startOffset+prevAccumulatedValue : startOffset+accumulatedValue-endOffset]
+			}
 		}
 	}
 
-	// 如果缓存未命中，从根节点开始搜索
 	nodeStartOffset := 0
 	originalLineNumber := lineNumber
 
+	// Search in tree
 	for x != SENTINEL {
 		if x.Left != SENTINEL && x.LFLeft >= lineNumber-1 {
 			x = x.Left
@@ -920,12 +749,13 @@ func (t *PieceTreeBase) GetLineRawContent(lineNumber int, endOffset int) string 
 			startOffset := t.OffsetInBuffer(x.Piece.BufferIndex, x.Piece.Start)
 			nodeStartOffset += x.SizeLeft
 
-			// 更新缓存
-			t.searchCache.Set(CacheEntry{
-				Node:                x,
-				NodeStartOffset:     nodeStartOffset,
-				NodeStartLineNumber: originalLineNumber - (lineNumber - 1 - x.LFLeft),
-			})
+			if t.searchCache != nil {
+				t.searchCache.Set(CacheEntry{
+					Node:                x,
+					NodeStartOffset:     nodeStartOffset,
+					NodeStartLineNumber: originalLineNumber - (lineNumber - 1 - x.LFLeft),
+				})
+			}
 
 			return buffer[startOffset+prevAccumulatedValue : startOffset+accumulatedValue-endOffset]
 		} else if x.LFLeft+x.Piece.LineFeedCnt == lineNumber-1 {
@@ -942,7 +772,7 @@ func (t *PieceTreeBase) GetLineRawContent(lineNumber int, endOffset int) string 
 		}
 	}
 
-	// 按顺序搜索，找到包含结束列的节点
+	// Search in order to find the node containing end column
 	x = x.Next()
 	for x != SENTINEL {
 		buffer := t.buffers[x.Piece.BufferIndex].Buffer
@@ -966,29 +796,25 @@ func (t *PieceTreeBase) GetLineRawContent(lineNumber int, endOffset int) string 
 
 // GetLineContent 获取指定行的内容
 func (t *PieceTreeBase) GetLineContent(lineNumber int) string {
-	// 检查行号是否有效
-	if lineNumber <= 0 || lineNumber > t.GetLineCount() {
+	if lineNumber < 1 || lineNumber > t.GetLineCount() {
 		return ""
 	}
 
-	// 检查缓存
+	// Check cache first
 	if t.lastVisitedLine.LineNumber == lineNumber {
 		return t.lastVisitedLine.Value
 	}
 
 	t.lastVisitedLine.LineNumber = lineNumber
 
-	// 根据不同情况处理行内容
-	if lineNumber == t.lineCnt {
-		// 最后一行
+	if lineNumber == t.GetLineCount() {
 		t.lastVisitedLine.Value = t.GetLineRawContent(lineNumber, 0)
 	} else if t.EOLNormalized {
-		// EOL已规范化，使用EOL长度
 		t.lastVisitedLine.Value = t.GetLineRawContent(lineNumber, t.EOLLength)
 	} else {
-		// EOL未规范化，需要移除行尾的换行符
 		rawContent := t.GetLineRawContent(lineNumber, 0)
-		t.lastVisitedLine.Value = regexp.MustCompile(`\r\n|\r|\n$`).ReplaceAllString(rawContent, "")
+		// Remove line endings from the end of the line
+		t.lastVisitedLine.Value = strings.TrimRight(rawContent, "\r\n")
 	}
 
 	return t.lastVisitedLine.Value
@@ -996,14 +822,11 @@ func (t *PieceTreeBase) GetLineContent(lineNumber int) string {
 
 // GetLineLength 获取指定行的长度
 func (t *PieceTreeBase) GetLineLength(lineNumber int) int {
-	// 检查行号是否有效（0-based索引）
-	if lineNumber < 0 || lineNumber >= t.lineCnt {
-		return 0
+	if lineNumber == t.GetLineCount() {
+		startOffset := t.GetOffsetAt(lineNumber, 1)
+		return t.GetLength() - startOffset
 	}
-
-	// 获取行内容
-	content := t.GetLineContent(lineNumber)
-	return len(content)
+	return t.GetOffsetAt(lineNumber+1, 1) - t.GetOffsetAt(lineNumber, 1) - t.EOLLength
 }
 
 // GetLineCharCode 获取指定行指定列的字符码
@@ -1183,43 +1006,56 @@ func (t *PieceTreeBase) FixCRLF(prev, next *TreeNode) {
 
 // CreateNewPieces 创建新的片段
 func (t *PieceTreeBase) CreateNewPieces(text string) []Piece {
-
 	if len(text) > AverageBufferSize {
-		newPieces := make([]Piece, 5)
+		newPieces := make([]Piece, 0)
 		for len(text) > AverageBufferSize {
 			lastChar := text[AverageBufferSize-1]
 			var splitText string
-			if lastChar == '\n' || (rune(lastChar) > 0xD800 && rune(lastChar) <= 0xDBFF) {
+			if lastChar == '\r' || (rune(text[AverageBufferSize-1]) >= 0xD800 && rune(text[AverageBufferSize-1]) <= 0xDBFF) {
+				// 最后一个字符是 \r 或高代理项，保留它
 				splitText = text[:AverageBufferSize-1]
 				text = text[AverageBufferSize-1:]
 			} else {
 				splitText = text[:AverageBufferSize]
 				text = text[AverageBufferSize:]
 			}
+
 			lineStarts := CreateLineStartsFast(splitText, false)
-			newPiece := NewPiece(len(t.buffers), BufferCursor{Line: 0, Column: 0}, BufferCursor{Line: len(lineStarts) - 1, Column: len(splitText) - lineStarts[len(lineStarts)-1]}, len(lineStarts)-1, len(splitText))
-			newPieces = append(newPieces, newPiece)
-
+			newPieces = append(newPieces, NewPiece(
+				len(t.buffers), // buffer index
+				BufferCursor{Line: 0, Column: 0},
+				BufferCursor{
+					Line:   len(lineStarts) - 1,
+					Column: len(splitText) - lineStarts[len(lineStarts)-1],
+				},
+				len(lineStarts)-1,
+				len(splitText),
+			))
 			t.buffers = append(t.buffers, NewStringBuffer(splitText, lineStarts))
-
 		}
-		lineStart := CreateLineStartsFast(text, false)
+
+		lineStarts := CreateLineStartsFast(text, false)
 		newPieces = append(newPieces, NewPiece(
-			len(t.buffers),
+			len(t.buffers), // buffer index
 			BufferCursor{Line: 0, Column: 0},
-			BufferCursor{Line: len(lineStart) - 1, Column: len(text) - lineStart[len(lineStart)-1]},
-			len(lineStart)-1,
-			len(text)))
-		t.buffers = append(t.buffers, NewStringBuffer(text, lineStart))
+			BufferCursor{
+				Line:   len(lineStarts) - 1,
+				Column: len(text) - lineStarts[len(lineStarts)-1],
+			},
+			len(lineStarts)-1,
+			len(text),
+		))
+		t.buffers = append(t.buffers, NewStringBuffer(text, lineStarts))
+
 		return newPieces
 	}
 
 	startOffset := len(t.buffers[0].Buffer)
 	lineStarts := CreateLineStartsFast(text, false)
-
 	start := t.lastChangeBufferPos
 
-	if t.buffers[0].LineStarts[len(t.buffers[0].LineStarts)-1] == startOffset &&
+	if len(t.buffers[0].LineStarts) > 0 &&
+		t.buffers[0].LineStarts[len(t.buffers[0].LineStarts)-1] == startOffset &&
 		startOffset != 0 &&
 		t.StartWithLF(text) &&
 		t.EndWithCR(t.buffers[0].Buffer) {
@@ -1242,7 +1078,7 @@ func (t *PieceTreeBase) CreateNewPieces(text string) []Piece {
 				lineStarts[i] += startOffset
 			}
 		}
-		t.buffers[0].LineStarts = append(t.buffers[0].LineStarts, lineStarts[:1]...)
+		t.buffers[0].LineStarts = append(t.buffers[0].LineStarts, lineStarts[1:]...)
 		t.buffers[0].Buffer += text
 	}
 
@@ -1254,7 +1090,6 @@ func (t *PieceTreeBase) CreateNewPieces(text string) []Piece {
 
 	t.lastChangeBufferPos = endPos
 	return []Piece{newPiece}
-
 }
 
 // AdjustCarriageReturnFromNext 调整下一个节点的回车符
@@ -1916,4 +1751,18 @@ func (t *PieceTreeBase) FindLastNode() *TreeNode {
 	}
 
 	return current
+}
+
+// GetLinesContent 获取所有行的内容
+func (t *PieceTreeBase) GetLinesContent() []string {
+	content := t.GetContentOfSubTree(t.Root)
+	if content == "" {
+		return []string{""}
+	}
+	return strings.Split(content, t.EOL)
+}
+
+// GetLinesRawContent 获取所有行的原始内容
+func (t *PieceTreeBase) GetLinesRawContent() string {
+	return t.GetContentOfSubTree(t.Root)
 }
