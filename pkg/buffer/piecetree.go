@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/kebaren/lemon/pkg/common"
+	"github.com/kebaren/textbuffer/pkg/common"
 )
 
 // PieceTreeBase 片段树基础结构

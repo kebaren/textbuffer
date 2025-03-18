@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"github.com/kebaren/lemon/pkg/buffer"
+	"github.com/kebaren/textbuffer/pkg/buffer"
 )
 
 func main() {
