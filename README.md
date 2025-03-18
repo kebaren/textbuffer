@@ -35,7 +35,7 @@
 导入包：
 
 ```go
-import "github.com/kebaren/lemon/pkg/buffer"
+import "github.com/kebaren/textbuffer/pkg/buffer"
 ```
 
 创建和使用文本缓冲区：
