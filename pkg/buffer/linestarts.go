@@ -28,10 +28,11 @@ func NewLineStarts() *LineStarts {
 // CreateLineStartsFast 快速创建行起始位置
 func CreateLineStartsFast(text string, isBasicASCII bool) []int {
 	result := []int{0}
-	for i, length := 0, len(text); i < length; i++ {
-		ch := text[i]
+	ustr := []rune(text)
+	for i := 0; i < len(ustr); i++ {
+		ch := ustr[i]
 		if ch == '\r' {
-			if i+1 < length && text[i+1] == '\n' {
+			if i+1 < len(ustr) && ustr[i+1] == '\n' {
 				i++
 			}
 			result = append(result, i+1)
@@ -46,9 +47,9 @@ func CreateLineStartsFast(text string, isBasicASCII bool) []int {
 func CreateLineStarts(text string) *LineStarts {
 	result := NewLineStarts()
 	result.IsBasicASCII = true
-
-	for i, length := 0, len(text); i < length; i++ {
-		ch := rune(text[i])
+	ustr := []rune(text)
+	for i, length := 0, len(ustr); i < length; i++ {
+		ch := ustr[i]
 
 		if !IsBasicASCII(ch) {
 			result.IsBasicASCII = false
@@ -56,7 +57,7 @@ func CreateLineStarts(text string) *LineStarts {
 
 		if ch == '\r' {
 			result.CRCount++
-			if i+1 < length && text[i+1] == '\n' {
+			if i+1 < length && ustr[i+1] == '\n' {
 				result.CRLFCount++
 				i++
 			}
