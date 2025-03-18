@@ -1,4 +1,4 @@
-module github.com/kebaren/lemon
+module github.com/kebaren/textbuffer
 
 go 1.21
 
