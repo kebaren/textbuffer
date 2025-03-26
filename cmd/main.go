@@ -31,7 +31,16 @@ func main() {
 	fmt.Printf("2->%q\n", tt.GetLineContent(2))
 	fmt.Printf("%q\n", tt.GetLinesRawContent())
 
-	tt.Delete(2, 1)
+	tt.Insert(2, "世\n界", true)
+	fmt.Println(tt.GetLinesContent())
+	fmt.Println(tt.GetLineCount())
+	fmt.Println(tt.GetLength())
+	fmt.Printf("0->%q\n", tt.GetLineContent(0))
+	fmt.Printf("1->%q\n", tt.GetLineContent(1))
+	fmt.Printf("2->%q\n", tt.GetLineContent(2))
+	fmt.Printf("%q\n", tt.GetLinesRawContent())
+
+	tt.Delete(3, 3)
 	fmt.Println(tt.GetLinesContent())
 	fmt.Println(tt.GetLineCount())
 	fmt.Println(tt.GetLength())
