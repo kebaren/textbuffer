@@ -53,6 +53,26 @@ func TestTextBufferBasicOperations(t *testing.T) {
 	assert.Equal(t, 14, tb.GetLength())
 	assert.Equal(t, 1, tb.GetLineCount())
 	assert.Equal(t, "HelloTestWorld", tb.GetLinesRawContent())
+
+	tb.Delete(0, 1)
+	assert.Equal(t, 13, tb.GetLength())
+	assert.Equal(t, 1, tb.GetLineCount())
+	assert.Equal(t, "elloTestWorld", tb.GetLinesRawContent())
+
+	tb.Delete(12, 1)
+	assert.Equal(t, 12, tb.GetLength())
+	assert.Equal(t, 1, tb.GetLineCount())
+	assert.Equal(t, "elloTestWorl", tb.GetLinesRawContent())
+
+	tb.Insert(4, "\n", true)
+	assert.Equal(t, 13, tb.GetLength())
+	assert.Equal(t, 2, tb.GetLineCount())
+	assert.Equal(t, "ello\nTestWorl", tb.GetLinesRawContent())
+
+	tb.Delete(2, 5)
+	assert.Equal(t, 8, tb.GetLength())
+	assert.Equal(t, 1, tb.GetLineCount())
+	assert.Equal(t, "elstWorl", tb.GetLinesRawContent())
 }
 
 func TestComprehensiveInsertDelete(t *testing.T) {
